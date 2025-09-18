@@ -81,6 +81,7 @@ public enum AtlasConfiguration {
     LINEAGE_MAX_NODE_COUNT("atlas.lineage.max.node.count", 9000),
 
     HTTP_HEADER_SERVER_VALUE("atlas.http.header.server.value", "Apache Atlas"),
+    STORAGE_BACKEND_TYPE("atlas.graph.storage.backend", ""),
     STORAGE_CONSISTENCY_LOCK_ENABLED("atlas.graph.storage.consistency-lock.enabled", true),
     REBUILD_INDEX("atlas.rebuild.index", false),
     PROCESS_NAME_UPDATE_PATCH("atlas.process.name.update.patch", false),
@@ -111,8 +112,11 @@ public enum AtlasConfiguration {
     ATLAS_AUDIT_DEFAULT_AGEOUT_IGNORE_TTL("atlas.audit.default.ageout.ignore.ttl", false),
     ATLAS_AUDIT_AGING_TTL_TEST_AUTOMATION("atlas.audit.aging.ttl.test.automation", false), //Only for test automation
     RELATIONSHIP_SEARCH_ENABLED("atlas.relationship.search.enabled", false),
-    UI_TASKS_TAB_USE_ENABLED("atlas.tasks.ui.tab.enabled", false);
-
+    UI_TASKS_TAB_USE_ENABLED("atlas.tasks.ui.tab.enabled", false),
+    ATLAS_ASYNC_IMPORT_MIN_DURATION_OVERRIDE_TEST_AUTOMATION("atlas.async.import.min.duration.override.test.automation", false),
+    ASYNC_IMPORT_TOPIC_PREFIX("atlas.async.import.topic.prefix", "ATLAS_IMPORT_"),
+    ASYNC_IMPORT_REQUEST_ID_PREFIX("atlas.async.import.request_id.prefix", "async_import_"),
+    REPLACE_HUGE_SPARK_PROCESS_ATTRIBUTES_PATCH("atlas.process.spark.attributes.update.patch", false);
     private static final Configuration APPLICATION_PROPERTIES;
 
     private final String propertyName;

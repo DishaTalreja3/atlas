@@ -29,12 +29,14 @@ import org.apache.atlas.model.instance.AtlasEntity.Status;
 import org.apache.atlas.model.typedef.AtlasBaseTypeDef;
 import org.apache.atlas.model.typedef.AtlasEnumDef;
 import org.apache.atlas.repository.Constants;
+import org.apache.atlas.repository.graph.GraphBackedSearchIndexer;
 import org.apache.atlas.repository.graph.GraphHelper;
 import org.apache.atlas.repository.graphdb.AtlasEdge;
 import org.apache.atlas.repository.graphdb.AtlasElement;
 import org.apache.atlas.repository.graphdb.AtlasGraph;
 import org.apache.atlas.repository.graphdb.AtlasGraphQuery;
 import org.apache.atlas.repository.graphdb.AtlasIndexQuery;
+import org.apache.atlas.repository.graphdb.AtlasUniqueKeyHandler;
 import org.apache.atlas.repository.graphdb.AtlasVertex;
 import org.apache.atlas.type.AtlasEntityType;
 import org.apache.atlas.type.AtlasEnumType;
@@ -67,6 +69,7 @@ import static org.apache.atlas.repository.Constants.ENTITY_TYPE_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.INDEX_SEARCH_VERTEX_PREFIX_DEFAULT;
 import static org.apache.atlas.repository.Constants.INDEX_SEARCH_VERTEX_PREFIX_PROPERTY;
 import static org.apache.atlas.repository.Constants.PROPAGATED_CLASSIFICATION_NAMES_KEY;
+import static org.apache.atlas.repository.Constants.PROPERTY_KEY_RECEIVED_TIME;
 import static org.apache.atlas.repository.Constants.RELATIONSHIP_TYPE_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.STATE_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.SUPER_TYPES_PROPERTY_KEY;
@@ -228,34 +231,62 @@ public class AtlasGraphUtilsV2 {
             LOG.debug("==> setProperty({}, {}, {})", toString(element), propertyName, value);
         }
 
+        AtlasUniqueKeyHandler uniqueKeyHandler = getGraphInstance().getUniqueKeyHandler();
+
         if (!isEncoded) {
             propertyName = encodePropertyKey(propertyName);
         }
 
-        Object existingValue = element.getProperty(propertyName, Object.class);
-
         if (value == null) {
-            if (existingValue != null) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("Removing property {} from {}", propertyName, toString(element));
-                }
+            if (uniqueKeyHandler != null) {
+                if (GraphBackedSearchIndexer.isTypeUniqueIndexKey(propertyName)) {
+                    String typeName  = getProperty(element, TYPE_NAME_PROPERTY_KEY, String.class);
+                    Object propValue = getProperty(element, propertyName, Object.class);
 
-                element.removeProperty(propertyName);
+                    uniqueKeyHandler.removeTypeUniqueKey(typeName, propertyName, propValue, element instanceof AtlasVertex);
+                } else if (GraphBackedSearchIndexer.isGlobalUniqueIndexKey(propertyName)) {
+                    Object propValue = getProperty(element, propertyName, Object.class);
+
+                    uniqueKeyHandler.removeUniqueKey(propertyName, propValue, element instanceof AtlasVertex);
+                }
             }
+
+            element.removeProperty(propertyName);
         } else {
-            if (!value.equals(existingValue)) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("Setting property {} in {}", propertyName, toString(element));
-                }
+            if (value instanceof Date) {
+                value = ((Date) value).getTime();
+            }
 
-                if (value instanceof Date) {
-                    Long encodedValue = ((Date) value).getTime();
+            if (uniqueKeyHandler != null) {
+                if (GraphBackedSearchIndexer.isTypeUniqueIndexKey(propertyName)) {
+                    Object existingValue = getProperty(element, propertyName, Object.class);
+                    String typeName      = getProperty(element, TYPE_NAME_PROPERTY_KEY, String.class);
 
-                    element.setProperty(propertyName, encodedValue);
-                } else {
-                    element.setProperty(propertyName, value);
+                    if (existingValue != null) {
+                        if (!existingValue.equals(value)) {
+                            // remove the existing value from unique key index
+                            uniqueKeyHandler.removeTypeUniqueKey(typeName, propertyName, existingValue, element instanceof AtlasVertex);
+                            uniqueKeyHandler.addTypeUniqueKey(typeName, propertyName, value, element.getId(), element instanceof AtlasVertex);
+                        }
+                    } else {
+                        uniqueKeyHandler.addTypeUniqueKey(typeName, propertyName, value, element.getId(), element instanceof AtlasVertex);
+                    }
+                } else if (GraphBackedSearchIndexer.isGlobalUniqueIndexKey(propertyName)) {
+                    String existingValue = getProperty(element, propertyName, String.class);
+
+                    if (existingValue != null) {
+                        if (!existingValue.equals(value)) {
+                            // remove the existing value from global unique key index
+                            uniqueKeyHandler.removeUniqueKey(propertyName, existingValue, element instanceof AtlasVertex);
+                            uniqueKeyHandler.addUniqueKey(propertyName, value, element.getId(), element instanceof AtlasVertex);
+                        }
+                    } else {
+                        uniqueKeyHandler.addUniqueKey(propertyName, value, element.getId(), element instanceof AtlasVertex);
+                    }
                 }
             }
+
+            element.setProperty(propertyName, value);
         }
     }
 
@@ -545,6 +576,41 @@ public class AtlasGraphUtilsV2 {
 
     public static List<String> findEntityGUIDsByType(AtlasGraph graph, String typename) {
         return findEntityGUIDsByType(graph, typename, null);
+    }
+
+    public static List<String> findEntityPropertyValuesByTypeAndAttributes(String typeName, Map<String, Object> attributeValues, String propertyKey) {
+        return findEntityPropertyValuesByTypeAndAttributes(getGraphInstance(), typeName, attributeValues, propertyKey);
+    }
+
+    public static List<String> findEntityPropertyValuesByTypeAndAttributes(AtlasGraph graph, String typeName, Map<String, Object> attributeValues, String propertyKey) {
+        MetricRecorder  metric = RequestContext.get().startMetricRecord("findEntityPropertyValuesByTypeAndAttributes");
+        AtlasGraphQuery query  = graph.query().has(ENTITY_TYPE_PROPERTY_KEY, typeName);
+
+        for (Map.Entry<String, Object> entry : attributeValues.entrySet()) {
+            String attrName  = entry.getKey();
+            Object attrValue = entry.getValue();
+
+            if (attrName != null && attrValue != null) {
+                query.has(attrName, attrValue);
+            }
+        }
+
+        query.orderBy(PROPERTY_KEY_RECEIVED_TIME, ASC);
+
+        List<String> propertyValues = new ArrayList<>();
+
+        for (Iterator<AtlasVertex<?, ?>> results = query.vertices().iterator(); results.hasNext(); ) {
+            AtlasVertex<?, ?> vertex        = results.next();
+            String            propertyValue = AtlasGraphUtilsV2.getProperty(vertex, propertyKey, String.class);
+
+            if (propertyValue != null) {
+                propertyValues.add(propertyValue);
+            }
+        }
+
+        RequestContext.get().endMetricRecord(metric);
+
+        return propertyValues;
     }
 
     public static Iterator<AtlasVertex> findActiveEntityVerticesByType(AtlasGraph graph, String typename) {
